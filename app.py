@@ -12,9 +12,6 @@ st.title("🇸🇦 Saudi License Plate Character Recognition")
 st.write("Upload an image of a Saudi license plate to detect and recognize the characters using YOLO and Tesseract OCR.")
 
 # --- Model Loading ---
-# IMPORTANT: Assuming the trained YOLO model weights are saved here.
-# The original notebook trained a model named 'yolo_characters_custom'.
-# If this path is incorrect, please provide the correct path to 'best.pt'.
 MODEL_PATH = "best.pt"
 FALLBACK_MODEL_PATH = "yolov8n.pt" # Base model if trained one not found
 
@@ -38,8 +35,8 @@ model = load_yolo_model(MODEL_PATH)
 
 # --- OCR Function ---
 def apply_ocr_on_yolo_boxes(image_np):
-    """Applies YOLO detection and Tesseract OCR on the image."""
-    texts = []
+    """Applies YOLO detection and Tesseract OCR on the image with improved sorting."""
+    detected_chars = [] # Store tuples of (box_coords, text)
     annotated_image = image_np.copy()
 
     # Use YOLO to detect objects in the image
@@ -49,78 +46,109 @@ def apply_ocr_on_yolo_boxes(image_np):
         # Get image dimensions
         h, w = image_np.shape[:2]
 
-        # Sort boxes from left to right based on the x-coordinate of the top-left corner
-        # Accessing box coordinates might differ slightly based on ultralytics version, adjust if needed
-        try:
-            # Assuming results[0].boxes contains box data including xyxy
-            sorted_boxes = sorted(results[0].boxes, key=lambda b: b.xyxy[0][0].item())
-        except Exception as e:
-            st.error(f"Error sorting boxes: {e}. Using unsorted boxes.")
-            sorted_boxes = results[0].boxes
-
-        for box in sorted_boxes:
-            # Extract coordinates
-            try:
+        boxes_data = [] # Store box data for sorting: (x1, y1, x2, y2, center_y)
+        for box in results[0].boxes:
+             try:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-            except Exception as e:
+                # Ensure coordinates are within image bounds
+                x1 = max(0, min(x1, w))
+                x2 = max(0, min(x2, w))
+                y1 = max(0, min(y1, h))
+                y2 = max(0, min(y2, h))
+                # Check if the box has valid dimensions
+                if x1 < x2 and y1 < y2:
+                    center_y = (y1 + y2) / 2
+                    boxes_data.append(((x1, y1, x2, y2), center_y))
+                else:
+                    st.warning(f"Skipping invalid box with coordinates: ({x1}, {y1}, {x2}, {y2})")
+             except Exception as e:
                 st.error(f"Error extracting box coordinates: {e}")
                 continue
 
-            # Ensure coordinates are within image bounds
-            x1 = max(0, min(x1, w))
-            x2 = max(0, min(x2, w))
-            y1 = max(0, min(y1, h))
-            y2 = max(0, min(y2, h))
+        if not boxes_data:
+            st.warning("No valid character boxes found after filtering.")
+            return "No characters detected", image_np
 
-            # Check if the box has valid dimensions
-            if x1 >= x2 or y1 >= y2:
-                st.warning(f"Skipping invalid box with coordinates: ({x1}, {y1}, {x2}, {y2})")
-                continue
+        # --- Improved Sorting Logic ---
+        # Sort primarily by vertical position (center_y), then by horizontal position (x1)
+        # Group boxes by approximate row based on vertical overlap or proximity
+        boxes_data.sort(key=lambda item: item[1]) # Initial sort by center_y
 
-            # Crop character region
-            cropped_image = image_np[y1:y2, x1:x2]
+        rows = []
+        if boxes_data:
+            current_row = [boxes_data[0]]
+            last_box_coords, last_center_y = boxes_data[0]
 
-            # Preprocess for OCR
-            try:
-                gray_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
-                # Apply thresholding (Otsu's method)
-                _, thresholded_image = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-                # Optional: Add padding if needed for better OCR
-                # thresholded_image = cv2.copyMakeBorder(thresholded_image, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=[0,0,0])
-            except cv2.error as e:
-                st.warning(f"OpenCV error during preprocessing box ({x1},{y1},{x2},{y2}): {e}. Skipping box.")
-                continue
-            except Exception as e:
-                st.warning(f"Error during preprocessing box ({x1},{y1},{x2},{y2}): {e}. Skipping box.")
-                continue
+            for i in range(1, len(boxes_data)):
+                box_coords, center_y = boxes_data[i]
+                # Check if the current box vertically overlaps significantly or is close to the last box in the current row
+                # Use a threshold based on box height (e.g., half the height)
+                box_height = box_coords[3] - box_coords[1]
+                vertical_threshold = box_height * 0.5 # Adjust this threshold as needed
 
-            # OCR with Tesseract
-            try:
-                # --psm 7: Treat the image as a single text line.
-                # --oem 3: Default OCR Engine Mode
-                # -l ara: Specify Arabic language (adjust if needed, e.g., 'eng' for English)
-                # Check if Arabic language data is installed for Tesseract
-                custom_config = r'--oem 3 --psm 7 -l ara'
-                extracted_text = pytesseract.image_to_string(thresholded_image, config=custom_config).strip()
-
-                # Basic filtering (remove non-alphanumeric if needed, depends on expected characters)
-                # extracted_text = ''.join(filter(str.isalnum, extracted_text))
-
-                if extracted_text:
-                    texts.append(extracted_text)
+                if abs(center_y - last_center_y) < vertical_threshold:
+                    current_row.append(boxes_data[i])
                 else:
-                     # Try English if Arabic fails or is empty
-                     custom_config_eng = r'--oem 3 --psm 7 -l eng'
-                     extracted_text_eng = pytesseract.image_to_string(thresholded_image, config=custom_config_eng).strip()
-                     if extracted_text_eng:
-                         texts.append(extracted_text_eng)
+                    # Sort the completed row horizontally
+                    current_row.sort(key=lambda item: item[0][0]) # Sort by x1
+                    rows.append(current_row)
+                    current_row = [boxes_data[i]] # Start a new row
 
-            except pytesseract.TesseractNotFoundError:
-                st.error("Tesseract is not installed or not in your PATH. Please install Tesseract.")
-                return "Error", image_np # Return early
-            except Exception as e:
-                st.warning(f"Error during OCR for box ({x1},{y1},{x2},{y2}): {e}")
-                texts.append("?") # Placeholder for error
+                last_box_coords, last_center_y = boxes_data[i] # Update last box info
+
+            # Add the last row after sorting it horizontally
+            current_row.sort(key=lambda item: item[0][0])
+            rows.append(current_row)
+
+        # --- OCR Processing (Iterate through sorted rows/boxes) ---
+        processed_texts = []
+        for row in rows:
+            row_texts = []
+            for box_data in row:
+                (x1, y1, x2, y2), _ = box_data
+                # Crop character region
+                cropped_image = image_np[y1:y2, x1:x2]
+
+                # Preprocess for OCR
+                try:
+                    gray_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
+                    _, thresholded_image = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                except cv2.error as e:
+                    st.warning(f"OpenCV error during preprocessing box ({x1},{y1},{x2},{y2}): {e}. Skipping box.")
+                    row_texts.append("?")
+                    continue
+                except Exception as e:
+                    st.warning(f"Error during preprocessing box ({x1},{y1},{x2},{y2}): {e}. Skipping box.")
+                    row_texts.append("?")
+                    continue
+
+                # OCR with Tesseract
+                extracted_text = "?" # Default to placeholder
+                try:
+                    custom_config_ara = r'--oem 3 --psm 7 -l ara'
+                    text_ara = pytesseract.image_to_string(thresholded_image, config=custom_config_ara).strip()
+
+                    custom_config_eng = r'--oem 3 --psm 7 -l eng'
+                    text_eng = pytesseract.image_to_string(thresholded_image, config=custom_config_eng).strip()
+
+                    # Prioritize Arabic if found, otherwise use English if found
+                    if text_ara:
+                        extracted_text = text_ara
+                    elif text_eng:
+                         # Basic filtering for English (allow only uppercase letters and digits)
+                         filtered_eng = ''.join(filter(lambda char: char.isalnum() and char.isupper() or char.isdigit(), text_eng))
+                         if filtered_eng:
+                             extracted_text = filtered_eng
+
+                except pytesseract.TesseractNotFoundError:
+                    st.error("Tesseract is not installed or not in your PATH. Please install Tesseract.")
+                    return "Error: Tesseract not found", image_np # Return early
+                except Exception as e:
+                    st.warning(f"Error during OCR for box ({x1},{y1},{x2},{y2}): {e}")
+                    # Keep extracted_text as "?"
+
+                row_texts.append(extracted_text)
+            processed_texts.append("".join(row_texts)) # Join characters within a row without space
 
         # Plot YOLO results on the image (bounding boxes and labels)
         try:
@@ -129,7 +157,8 @@ def apply_ocr_on_yolo_boxes(image_np):
             st.error(f"Error plotting YOLO results: {e}")
             # Keep the original image if plotting fails
 
-        final_text = ' '.join(texts) # Join characters with space
+        # Join rows with a space or newline depending on desired format
+        final_text = ' '.join(processed_texts)
         return final_text, annotated_image
 
     else:
@@ -161,7 +190,13 @@ if uploaded_file is not None:
         st.image(annotated_display_image_rgb, caption='Processed Image with Detections', use_column_width=True)
 
         st.subheader("Extracted Text:")
-        st.code(extracted_text, language=None)
+        # Display text with right-to-left direction if it contains Arabic characters
+        # Basic check for Arabic characters
+        contains_arabic = any('\u0600' <= char <= '\u06FF' for char in extracted_text)
+        if contains_arabic:
+            st.markdown(f'<div dir="rtl">{extracted_text}</div>', unsafe_allow_html=True)
+        else:
+            st.code(extracted_text, language=None)
 
         # Check Tesseract languages
         try:
@@ -173,4 +208,3 @@ if uploaded_file is not None:
              pass # Error already handled in OCR function
         except Exception as e:
              st.warning(f"Could not check Tesseract languages: {e}")
-
