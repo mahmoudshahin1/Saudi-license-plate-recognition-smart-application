@@ -6,6 +6,7 @@ import pytesseract
 from ultralytics import YOLO
 import os
 import re # Import regex for better character filtering
+import traceback # For detailed error logging
 
 # --- Configuration ---
 st.set_page_config(layout="wide", page_title="Saudi License Plate OCR")
@@ -15,9 +16,9 @@ st.write("Upload an image of a Saudi license plate to detect and recognize the c
 # --- Model Loading ---
 MODEL_PATH = "best.pt"
 FALLBACK_MODEL_PATH = "yolov8n.pt" # Base model if trained one not found
-# Reverted to original font path as requested, ensure path is correct
-ARABIC_FONT_PATH = "/usr/share/fonts/truetype/fonts-arabeyes/ae_Arab.ttf" # Reverted to ae_Arab
-FALLBACK_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" # Default on many Linux systems
+# Font paths - ensuring correctness
+ARABIC_FONT_PATH = "/usr/share/fonts/truetype/fonts-arabeyes/ae_Arab.ttf"
+FALLBACK_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 @st.cache_resource # Cache the model loading
 def load_yolo_model(model_path):
@@ -37,38 +38,48 @@ def load_yolo_model(model_path):
 
 model = load_yolo_model(MODEL_PATH)
 
-# --- Font Loading ---
-@st.cache_resource
+# --- Font Loading with Enhanced Debugging ---
+# @st.cache_resource # Temporarily disable caching for font loading debug
 def load_font(font_size=20):
-    """Loads the font for drawing text."""
-    font_path_to_use = None
+    """Loads the font for drawing text with detailed error logging."""
+    st.write(f"Attempting to load fonts. Font size: {font_size}") # Debug message
     font_found = False
-    try:
-        if os.path.exists(ARABIC_FONT_PATH):
-            font_path_to_use = ARABIC_FONT_PATH
-            font = ImageFont.truetype(font_path_to_use, font_size)
-            st.success(f"Attempting to load Arabic font: {ARABIC_FONT_PATH}")
+
+    # --- Try Arabic Font ---
+    st.write(f"Checking for Arabic font at: {ARABIC_FONT_PATH}")
+    if os.path.exists(ARABIC_FONT_PATH):
+        st.write(f"Arabic font file found at {ARABIC_FONT_PATH}. Attempting to load...")
+        try:
+            font = ImageFont.truetype(ARABIC_FONT_PATH, font_size)
+            st.success(f"Successfully loaded Arabic font: {ARABIC_FONT_PATH}")
             font_found = True
             return font
-        else:
-            st.warning(f"Arabic font not found at {ARABIC_FONT_PATH}. Trying fallback.")
-    except Exception as e:
-        st.warning(f"Error loading Arabic font {ARABIC_FONT_PATH}: {e}. Trying fallback.")
+        except Exception as e:
+            st.warning(f"Error loading Arabic font {ARABIC_FONT_PATH}: {e}")
+            st.text(traceback.format_exc()) # Print detailed traceback
+            st.warning("Proceeding to fallback font.")
+    else:
+        st.warning(f"Arabic font file NOT found at {ARABIC_FONT_PATH}. Trying fallback.")
 
-    try:
-        if os.path.exists(FALLBACK_FONT_PATH):
-            font_path_to_use = FALLBACK_FONT_PATH
-            font = ImageFont.truetype(font_path_to_use, font_size)
-            st.info(f"Using fallback font: {FALLBACK_FONT_PATH}")
+    # --- Try Fallback Font ---
+    st.write(f"Checking for fallback font at: {FALLBACK_FONT_PATH}")
+    if os.path.exists(FALLBACK_FONT_PATH):
+        st.write(f"Fallback font file found at {FALLBACK_FONT_PATH}. Attempting to load...")
+        try:
+            font = ImageFont.truetype(FALLBACK_FONT_PATH, font_size)
+            st.info(f"Successfully loaded fallback font: {FALLBACK_FONT_PATH}")
             font_found = True
             return font
-        else:
-            st.error(f"Fallback font not found at {FALLBACK_FONT_PATH}. Text rendering might fail.")
-    except Exception as e:
-        st.error(f"Error loading fallback font {FALLBACK_FONT_PATH}: {e}. Text rendering might fail.")
+        except Exception as e:
+            st.error(f"Error loading fallback font {FALLBACK_FONT_PATH}: {e}")
+            st.text(traceback.format_exc()) # Print detailed traceback
+            st.error("Fallback font loading failed. Text rendering might fail.")
+    else:
+        st.error(f"Fallback font file NOT found at {FALLBACK_FONT_PATH}. Text rendering might fail.")
 
+    # --- No Font Loaded ---
     if not font_found:
-        st.error("No suitable font found. Cannot render text on image.")
+        st.error("No suitable font found (Arabic or fallback). Cannot render text on image.")
         return None
 
 # Load font with a specific size for drawing on image
@@ -272,7 +283,6 @@ if uploaded_file is not None:
                 # Ignore "Other" in formatted output
 
             # Determine dominant letter type for formatting
-            # Prioritize Arabic if any Arabic letters are found (typical for Saudi plates)
             display_letters_rtl = arabic_found
 
             formatted_letters_section = ""
