@@ -15,8 +15,8 @@ st.write("Upload an image of a Saudi license plate to detect and recognize the c
 # --- Model Loading ---
 MODEL_PATH = "best.pt"
 FALLBACK_MODEL_PATH = "yolov8n.pt" # Base model if trained one not found
-# Try a different font from the package, ensure path is correct
-ARABIC_FONT_PATH = "/usr/share/fonts/truetype/fonts-arabeyes/ae_AlArabiya.ttf" # Trying ae_AlArabiya
+# Reverted to original font path as requested, ensure path is correct
+ARABIC_FONT_PATH = "/usr/share/fonts/truetype/fonts-arabeyes/ae_Arab.ttf" # Reverted to ae_Arab
 FALLBACK_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" # Default on many Linux systems
 
 @st.cache_resource # Cache the model loading
@@ -47,7 +47,7 @@ def load_font(font_size=20):
         if os.path.exists(ARABIC_FONT_PATH):
             font_path_to_use = ARABIC_FONT_PATH
             font = ImageFont.truetype(font_path_to_use, font_size)
-            st.success(f"Successfully loaded Arabic font: {ARABIC_FONT_PATH}")
+            st.success(f"Attempting to load Arabic font: {ARABIC_FONT_PATH}") # Changed message slightly
             font_found = True
             return font
         else:
@@ -77,18 +77,18 @@ font_for_drawing = load_font(font_size=25)
 # --- Helper Function for Character Classification ---
 def classify_char(char):
     """Classify character as Arabic Letter, Digit, or Other."""
-    if not char or char == '?':
-        return 'Other'
+    if not char or char == "?":
+        return "Other"
     # Check for Arabic letters
-    if re.search(r'^["\u0600"-"\u06FF"]+$', char):
-        return 'Arabic Letter'
+    if re.search(r"^[\u0600-\u06FF]+$", char):
+        return "Arabic Letter"
     # Check for digits (Arabic-Indic or European)
-    if re.search(r'^[0-9\u0660-\u0669]+$', char):
-        return 'Digit'
+    if re.search(r"^[0-9\u0660-\u0669]+$", char):
+        return "Digit"
     # Check for English letters (might be misclassified Arabic)
-    if re.search(r'^[a-zA-Z]+$', char):
-         return 'English Letter' # Treat as potential letter
-    return 'Other'
+    if re.search(r"^[a-zA-Z]+$", char):
+         return "English Letter" # Treat as potential letter
+    return "Other"
 
 # --- OCR Function ---
 def apply_ocr_on_yolo_boxes(image_np):
@@ -103,7 +103,6 @@ def apply_ocr_on_yolo_boxes(image_np):
         h, w = image_np.shape[:2]
         try:
             # Sort boxes primarily by y-coordinate (top to bottom), then x-coordinate (left to right)
-            # This helps if the plate is slightly skewed
             sorted_boxes = sorted(results[0].boxes, key=lambda b: (b.xyxy[0][1].item(), b.xyxy[0][0].item()))
         except Exception as e:
             st.error(f"Error sorting boxes: {e}. Using unsorted boxes.")
@@ -124,33 +123,32 @@ def apply_ocr_on_yolo_boxes(image_np):
 
             cropped_image = image_np[y1:y2, x1:x2]
             extracted_text = "?"
-            char_type = 'Other'
+            char_type = "Other"
 
             try:
                 gray_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
-                # Apply adaptive thresholding, might be better for varying lighting
+                # Apply adaptive thresholding
                 thresholded_image = cv2.adaptiveThreshold(gray_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-                # _, thresholded_image = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
                 # OCR Config: PSM 10 assumes a single character
-                custom_config_ara = r'--oem 3 --psm 10 -l ara'
-                custom_config_eng = r'--oem 3 --psm 10 -l eng+ara' # Try eng+ara for digits
+                custom_config_ara = r"--oem 3 --psm 10 -l ara"
+                custom_config_eng = r"--oem 3 --psm 10 -l eng+ara" # Try eng+ara for digits
 
                 # Try Arabic first
                 ocr_text_ara = pytesseract.image_to_string(thresholded_image, config=custom_config_ara).strip()
-                ocr_text_ara = re.sub(r'[^\u0600-\u06FF0-9\u0660-\u0669a-zA-Z]', '', ocr_text_ara) # Keep only letters/digits
+                ocr_text_ara = re.sub(r"[^\u0600-\u06FF0-9\u0660-\u0669a-zA-Z]", "", ocr_text_ara)
 
                 # Try Eng/Digits second
                 ocr_text_eng = pytesseract.image_to_string(thresholded_image, config=custom_config_eng).strip()
-                ocr_text_eng = re.sub(r'[^\u0600-\u06FF0-9\u0660-\u0669a-zA-Z]', '', ocr_text_eng)
+                ocr_text_eng = re.sub(r"[^\u0600-\u06FF0-9\u0660-\u0669a-zA-Z]", "", ocr_text_eng)
 
                 # Prioritize Arabic letters if found
-                if ocr_text_ara and classify_char(ocr_text_ara) == 'Arabic Letter':
+                if ocr_text_ara and classify_char(ocr_text_ara) == "Arabic Letter":
                     extracted_text = ocr_text_ara
                 # Else prioritize digits found by either
-                elif ocr_text_eng and classify_char(ocr_text_eng) == 'Digit':
+                elif ocr_text_eng and classify_char(ocr_text_eng) == "Digit":
                      extracted_text = ocr_text_eng
-                elif ocr_text_ara and classify_char(ocr_text_ara) == 'Digit':
+                elif ocr_text_ara and classify_char(ocr_text_ara) == "Digit":
                      extracted_text = ocr_text_ara
                 # Fallback to English letters or whatever was found
                 elif ocr_text_eng:
@@ -162,12 +160,11 @@ def apply_ocr_on_yolo_boxes(image_np):
 
                 # Ensure only one character is stored if PSM 10 is effective
                 if len(extracted_text) > 1:
-                    # Heuristic: if it contains a digit, keep the digit part?
-                    digits_found = re.findall(r'[0-9\u0660-\u0669]', extracted_text)
+                    digits_found = re.findall(r"[0-9\u0660-\u0669]", extracted_text)
                     if digits_found:
                         extracted_text = digits_found[0]
                     else:
-                        extracted_text = extracted_text[0] # Take the first char otherwise
+                        extracted_text = extracted_text[0]
                 elif len(extracted_text) == 0:
                     extracted_text = "?"
 
@@ -195,7 +192,7 @@ def apply_ocr_on_yolo_boxes(image_np):
                     text_x = x1
                     text_y = max(0, y1 - font_for_drawing.size - 2)
                     try:
-                        if hasattr(font_for_drawing, 'getbbox'):
+                        if hasattr(font_for_drawing, "getbbox"):
                             bbox = draw.textbbox((text_x, text_y), text, font=font_for_drawing)
                         else:
                             text_width, text_height = draw.textsize(text, font=font_for_drawing)
@@ -232,7 +229,7 @@ if uploaded_file is not None:
     col1, col2 = st.columns(2)
 
     with col1:
-        st.image(display_image, caption='Uploaded Image', use_column_width=True)
+        st.image(display_image, caption="Uploaded Image", use_column_width=True)
 
     with col2:
         st.write("Processing...")
@@ -241,7 +238,7 @@ if uploaded_file is not None:
 
         # Display annotated image
         annotated_display_image_rgb = cv2.cvtColor(annotated_display_image, cv2.COLOR_BGR2RGB)
-        st.image(annotated_display_image_rgb, caption='Processed Image with Detections & Text', use_column_width=True)
+        st.image(annotated_display_image_rgb, caption="Processed Image with Detections & Text", use_column_width=True)
 
         st.subheader("Extracted Plate Text:")
 
@@ -254,13 +251,12 @@ if uploaded_file is not None:
 
             for _, text, char_type in ocr_result:
                 raw_sequence.append(text) # Keep track of original detected sequence
-                if char_type == 'Arabic Letter' or char_type == 'English Letter':
+                if char_type == "Arabic Letter" or char_type == "English Letter":
                     letters.append(text)
-                elif char_type == 'Digit':
+                elif char_type == "Digit":
                     numbers.append(text)
-                else: # Handle 'Other' or '?' - maybe append to shorter list or discard?
-                    # Let's append to both for now to see them in raw output
-                    pass # Or decide where placeholders go
+                else: # Handle "Other" or "?"
+                    pass # Discard placeholders from formatted output
 
             # Format for Saudi Plate (Letters RTL, Numbers LTR)
             # Reverse the detected letter sequence for correct RTL display
@@ -268,15 +264,17 @@ if uploaded_file is not None:
             formatted_numbers = " ".join(numbers)
 
             # Display using HTML for directional control
-            # Use the font families we tried to load for consistency
-            plate_html = f'''
+            # Reverted font family name in HTML
+            plate_html = f"""
             <div style="border: 1px solid #ccc; padding: 10px; margin-top: 10px; background-color: #f0f0f0; text-align: center;">
-                <span style="font-size: 2em; direction: rtl; unicode-bidi: bidi-override; display: inline-block; margin-right: 15px; font-family: 'ae_AlArabiya', 'DejaVu Sans', sans-serif; font-weight: bold; color: #333;">
-                    {formatted_letters if formatted_letters else '[Letters?]'}</span>
+                <span style="font-size: 2em; direction: rtl; unicode-bidi: bidi-override; display: inline-block; margin-right: 15px; font-family: 'ae_Arab', 'DejaVu Sans', sans-serif; font-weight: bold; color: #333;">
+                    {formatted_letters if formatted_letters else '[Letters?]'}
+                </span>
                 <span style="font-size: 2em; direction: ltr; display: inline-block; font-family: 'DejaVu Sans', sans-serif; font-weight: bold; color: #333;">
-                    {formatted_numbers if formatted_numbers else '[Numbers?]'}</span>
+                    {formatted_numbers if formatted_numbers else '[Numbers?]'}
+                </span>
             </div>
-            '''
+            """
             st.markdown("**Formatted Plate:**")
             st.markdown(plate_html, unsafe_allow_html=True)
             st.markdown("*Note: Assumes standard Saudi plate format (Letters first, then Numbers). RTL applied to letters.*")
@@ -290,11 +288,11 @@ if uploaded_file is not None:
 
         # Check Tesseract languages
         try:
-            langs = pytesseract.get_languages(config='')
+            langs = pytesseract.get_languages(config="")
             st.info(f"Available Tesseract languages: {langs}")
-            if 'ara' not in langs:
+            if "ara" not in langs:
                 st.warning("Arabic language data ('ara') for Tesseract might not be installed. OCR accuracy for Arabic may be low. You might need to install 'tesseract-ocr-ara'.")
-            if 'eng' not in langs:
+            if "eng" not in langs:
                  st.warning("English language data ('eng') for Tesseract might not be installed.")
         except pytesseract.TesseractNotFoundError:
              pass # Error already handled
